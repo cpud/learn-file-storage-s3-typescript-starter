@@ -1,5 +1,6 @@
 import { newDatabase } from "./db/db";
 import type { Database } from "bun:sqlite";
+import { s3, S3Client } from "bun";
 
 export type ApiConfig = {
   db: Database;
@@ -10,6 +11,7 @@ export type ApiConfig = {
   s3Bucket: string;
   s3Region: string;
   s3CfDistribution: string;
+  s3Client: S3Client;
   port: string;
 };
 
@@ -24,6 +26,7 @@ const s3CfDistribution = envOrThrow("S3_CF_DISTRO");
 const port = envOrThrow("PORT");
 
 const db = newDatabase(pathToDB);
+const client = s3;
 
 export const cfg: ApiConfig = {
   db: db,
@@ -34,6 +37,7 @@ export const cfg: ApiConfig = {
   s3Bucket: s3Bucket,
   s3Region: s3Region,
   s3CfDistribution: s3CfDistribution,
+  s3Client: client,
   port: port,
 };
 
