@@ -1,13 +1,13 @@
 import { rm } from "fs/promises";
 import path from "path";
 import { getBearerToken, validateJWT } from "../auth";
-import { getVideo, updateVideo } from "../db/videos";
+import { getVideo, updateVideo, type Video } from "../db/videos";
 import { respondWithJSON } from "./json";
-import { uploadVideoToS3 } from "../s3";
+import { uploadVideoToS3, generatePresignedURL } from "../s3";
 import { BadRequestError, NotFoundError, UserForbiddenError } from "./errors";
 
 import { type ApiConfig } from "../config";
-import { file, type BunRequest } from "bun";
+import type { BunRequest } from "bun";
 
 export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
   const MAX_UPLOAD_SIZE = 1 << 30;
@@ -44,51 +44,64 @@ export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
   await Bun.write(tempFilePath, file);
 
   const aspectRatio = await getVideoAspectRatio(tempFilePath);
-  let key = `${aspectRatio}/${videoId}.mp4`;
-
   const processedFilePath = await processVideoForFastStart(tempFilePath);
+
+  const key = `${aspectRatio}/${videoId}.mp4`;
   await uploadVideoToS3(cfg, key, processedFilePath, "video/mp4");
 
-  const videoURL = `https://${cfg.s3Bucket}.s3.${cfg.s3Region}.amazonaws.com/${key}`;
-  video.videoURL = videoURL;
+  video.videoURL = `${key}`;
   updateVideo(cfg.db, video);
 
-  await Promise.all([rm(tempFilePath, { force: true }),
-                     rm(`${tempFilePath}.processed.mp4`, {force : true}),
+  await Promise.all([
+    rm(tempFilePath, { force: true }),
+    rm(`${tempFilePath}.processed.mp4`, { force: true }),
   ]);
 
-  return respondWithJSON(200, video);
+  const signedVideo = dbVideoToSignedVideo(cfg, video);
+  return respondWithJSON(200, signedVideo);
 }
 
-async function getVideoAspectRatio(filePath: string) {
-  const proc = Bun.spawn(["ffprobe","-v","error", "-print_format","json","-show_streams",filePath], 
-//    {
-//    stdout: "inherit",
-//    stderr: "pipe", 
-//  }
-);
-  const exitCode = await proc.exited;
+export async function getVideoAspectRatio(filePath: string) {
+  const process = Bun.spawn(
+    [
+      "ffprobe",
+      "-v",
+      "error",
+      "-select_streams",
+      "v:0",
+      "-show_entries",
+      "stream=width,height",
+      "-of",
+      "json",
+      filePath,
+    ],
+    {
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
+
+  const outputText = await new Response(process.stdout).text();
+  const errorText = await new Response(process.stderr).text();
+
+  const exitCode = await process.exited;
 
   if (exitCode !== 0) {
-    throw new Error("Error spawning bun process");
+    throw new Error(`ffprobe error: ${errorText}`);
   }
 
-
-  const stdoutJson = await new Response(proc.stdout).json();
-  const width = stdoutJson.streams[0].width;
-  const height = stdoutJson.streams[0].height;
-  console.log(`${width} ${height}`);
-
-  if (Math.floor(width/16) == Math.floor(height / 9)) {
-    return 'landscape';
+  const output = JSON.parse(outputText);
+  if (!output.streams || output.streams.length === 0) {
+    throw new Error("No video streams found");
   }
 
-  if (Math.floor(width/9) == Math.floor(height / 16)) {
-    return 'portrait';
-  }
+  const { width, height } = output.streams[0];
 
-  return 'other';
-  
+  return width === Math.floor(16 * (height / 9))
+    ? "landscape"
+    : height === Math.floor(16 * (width / 9))
+      ? "portrait"
+      : "other";
 }
 
 export async function processVideoForFastStart(inputFilePath: string) {
@@ -120,4 +133,14 @@ export async function processVideoForFastStart(inputFilePath: string) {
   }
 
   return processedFilePath;
+}
+
+export async function dbVideoToSignedVideo(cfg: ApiConfig, video: Video) {
+  if (!video.videoURL) {
+    return video;
+  }
+
+  video.videoURL = await generatePresignedURL(cfg, video.videoURL, 5 * 60);
+
+  return video;
 }
