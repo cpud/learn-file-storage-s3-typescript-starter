@@ -11,6 +11,7 @@ export async function uploadVideoToS3(
   await s3file.write(videoFile, { type: contentType });
 }
 
+/*
 export async function generatePresignedURL(
   cfg: ApiConfig,
   key: string,
@@ -18,3 +19,4 @@ export async function generatePresignedURL(
 ) {
   return cfg.s3Client.presign(`${key}`, { expiresIn: expireTime });
 }
+  */
